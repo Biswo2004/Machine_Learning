@@ -56,7 +56,28 @@ The labels are converted to numerical values for the model: `ham = 0`, `spam = 1
 
 ## ⚙️ Installation
 
-1. **Clone the repository:**
-```bash
-git clone https://github.com/yourusername/spam-detector.git
-cd spam-detector
+1. **Clone the Repository**  
+   ```bash
+   git clone <your-repo-url>
+   cd <repo-folder>
+
+---
+
+**Create & Activate a Virtual Environment:** 
+
+`python -m venv venv && source venv/bin/activate` 
+- *(Windows: `venv\Scripts\activate`)*
+- *(linux/macos: `source venv/bin/activate`)*
+
+---
+
+**Install Dependencies:**
+- `pip install -r requirements.txt`
+
+---
+## ▶️ Usage
+
+1. **Run the Streamlit app:**
+  - `streamlit run app.py`
+
+
