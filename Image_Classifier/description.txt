@@ -1,0 +1,524 @@
+High-level overview
+
+This Streamlit app does two things:
+
+Train a small convolutional neural network (CNN) on the MNIST dataset (handwritten digits 0–9) when you press the Train / Retrain Model button in the sidebar.
+
+Let you draw one or multiple digits on the left canvas, then segment, preprocess, and predict each digit with the trained CNN when you press Predict. The right column shows a compact training plot and a quick test-image predictor.
+
+Below I’ll walk through the code block-by-block and — where useful — line-by-line, explaining what each line does and why it’s there.
+
+Imports and top-level helpers
+import streamlit as st
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras import datasets, layers, models
+from tensorflow.keras.utils import to_categorical
+from streamlit_drawable_canvas import st_canvas
+import cv2
+
+
+streamlit — UI framework that makes the app interactive.
+
+numpy — array manipulation and numeric ops.
+
+matplotlib.pyplot — for plotting the probability bars and training graphs.
+
+tensorflow.keras.datasets — contains MNIST; layers, models are Keras model building blocks.
+
+to_categorical — converts integer labels (0..9) into one-hot vectors required for categorical_crossentropy.
+
+st_canvas — provides an interactive drawing canvas in Streamlit.
+
+cv2 (OpenCV) — image processing (thresholding, contours, resizing, moments, warping).
+
+Loading MNIST (load_data)
+@st.cache_data
+def load_data():
+    (train_images, train_labels), (test_images, test_labels) = datasets.mnist.load_data()
+
+    # Normalize
+    train_images = train_images.astype('float32') / 255
+    test_images = test_images.astype('float32') / 255
+
+    # Reshape
+    train_images = train_images.reshape((train_images.shape[0], 28, 28, 1))
+    test_images = test_images.reshape((test_images.shape[0], 28, 28, 1))
+
+    # One-hot encode labels
+    train_labels = to_categorical(train_labels)
+    test_labels = to_categorical(test_labels)
+
+    return train_images, train_labels, test_images, test_labels
+
+
+@st.cache_data — caches the function result so the dataset is loaded once (or when inputs change). This avoids re-downloading/recomputing on every Streamlit rerun.
+
+datasets.mnist.load_data() — returns two tuples: training (images, labels) and test (images, labels). MNIST shapes: training images (60000, 28, 28), test (10000, 28, 28).
+
+astype('float32') / 255 — converts 0–255 integers to floating values in [0.0, 1.0]. Neural nets train better on scaled inputs.
+
+reshape(..., 28, 28, 1) — Keras Conv2D expects a channel dimension; 1 indicates grayscale.
+
+to_categorical(...) — converts label 7 → [0,0,0,0,0,0,0,1,0,0]. Required because the model uses categorical_crossentropy.
+
+Returns four arrays ready for training.
+
+Building the CNN (build_model)
+def build_model():
+    model = models.Sequential()
+    model.add(layers.Conv2D(32, (3, 3), activation='relu', input_shape=(28, 28, 1)))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
+    model.add(layers.Flatten())
+    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dense(10, activation='softmax'))
+
+    model.compile(optimizer='adam',
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
+    return model
+
+
+Step-by-step:
+
+Sequential() — a linear stack of layers.
+
+Conv2D(32, (3,3), activation='relu', input_shape=(28,28,1)) — first convolutional layer: 32 filters, each 3×3. ReLU activation. input_shape defines expected input size.
+
+MaxPooling2D((2,2)) — reduces spatial resolution by downsampling (halves height & width). This reduces parameters and gives some translation invariance.
+
+Conv2D(64, (3,3)) and another MaxPooling2D — deeper convolutional features with 64 filters.
+
+Another Conv2D(64, (3,3)) — one more conv layer to extract higher-level patterns.
+
+Flatten() — converts feature maps (2D) into a 1D vector for the Dense layers.
+
+Dense(64, activation='relu') — fully connected layer with 64 units.
+
+Dense(10, activation='softmax') — final classification layer: 10 outputs (digits 0–9). Softmax produces probabilities that sum to 1.
+
+compile(...):
+
+optimizer='adam' — adaptive optimizer; it adjusts learning rates per parameter.
+
+loss='categorical_crossentropy' — appropriate when labels are one-hot-coded; it measures difference between true one-hot vector and predicted probability distribution.
+
+metrics=['accuracy'] — reports accuracy during training/validation.
+
+What training learns: the network adjusts weights via backpropagation to minimize the categorical cross-entropy loss across training batches. Adam updates weights using gradient estimates.
+
+Plotting the predicted probabilities (plot_probabilities)
+def plot_probabilities(pred):
+    fig, ax = plt.subplots(figsize=(4, 2))
+    ax.bar(range(10), pred[0])
+    ax.set_xticks(range(10))
+    ax.set_xlabel("Digit", fontsize=8)
+    ax.set_ylabel("Prob", fontsize=8)
+    ax.set_ylim([0, 1])
+    ax.set_title("Probabilities", fontsize=9)
+    ax.tick_params(axis='both', labelsize=8)
+    plt.tight_layout()
+    return fig
+
+
+pred is expected to be the array returned by model.predict(proc) — shape (1,10).
+
+pred[0] — the 10 probabilities for classes 0..9.
+
+The bar chart shows how confident the model is for each digit; ylim([0,1]) keeps the vertical scale consistent.
+
+Preprocessing a single digit crop (preprocess_crop)
+
+This function converts a grayscale crop (extracted from the canvas) into a centered 28×28 image like MNIST.
+
+Key steps (annotated):
+
+# 1) binarize with Otsu thresholding
+_, th = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+
+Otsu automatically finds a threshold to separate foreground (digit strokes) from background.
+
+# 2) tight bbox around foreground pixels
+ys, xs = np.where(th > 0)
+if len(xs) == 0 or len(ys) == 0:
+    return None
+y1, y2 = ys.min(), ys.max()
+x1, x2 = xs.min(), xs.max()
+digit = th[y1:y2+1, x1:x2+1]
+
+
+If no foreground found, return None. Otherwise crop to the digit’s bounding box.
+
+# 3) pad to square
+h, w = digit.shape
+size = max(h, w)
+pad_top = (size - h) // 2
+pad_bottom = size - h - pad_top
+pad_left = (size - w) // 2
+pad_right = size - w - pad_left
+squared = cv2.copyMakeBorder(digit, pad_top, pad_bottom, pad_left, pad_right,
+                             cv2.BORDER_CONSTANT, value=0)
+
+
+Make the crop square by symmetric padding so the digit doesn’t get distorted by non-uniform resizing.
+
+# 4) resize to 20x20 then pad to 28x28
+resized = cv2.resize(squared, (20, 20), interpolation=cv2.INTER_AREA)
+padded = cv2.copyMakeBorder(resized, 4, 4, 4, 4,
+                            cv2.BORDER_CONSTANT, value=0)
+
+
+This mirrors the original MNIST preprocessing: digits are contained in a 20×20 box and then centered in a 28×28 image by padding 4 pixels on each side.
+
+# 5) center via center of mass shift using image moments
+M = cv2.moments(padded)
+if M["m00"] != 0:
+    cx = M["m10"] / M["m00"]
+    cy = M["m01"] / M["m00"]
+    shiftx = int(np.round(14 - cx))
+    shifty = int(np.round(14 - cy))
+    Mshift = np.float32([[1, 0, shiftx], [0, 1, shifty]])
+    centered = cv2.warpAffine(padded, Mshift, (28, 28), flags=cv2.INTER_NEAREST, borderValue=0)
+else:
+    centered = padded
+
+
+cv2.moments computes moments used to estimate the centroid (center of mass) (cx, cy) of the white pixels.
+
+The code computes how far the centroid is from the image center (14, 14) (center of a 28×28 image) and shifts the image so the digit is centrally located. That helps the CNN generalize better.
+
+img = centered.astype("float32") / 255.0
+img = img.reshape(1, 28, 28, 1)
+return img
+
+
+Normalize pixel values to [0,1] and add the batch and channel dimensions for model.predict/training.
+
+Why these steps? Maintaining aspect ratio, centering by mass, and using the MNIST 20×20/28×28 convention helps the drawn digit look like the MNIST dataset samples, which improves recognition.
+
+Segmenting multiple digits from the canvas (segment_digits_from_canvas)
+def segment_digits_from_canvas(rgba_img, min_area=50):
+    gray = cv2.cvtColor(rgba_img, cv2.COLOR_RGBA2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = np.ones((3, 3), np.uint8)
+    th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel, iterations=1)
+    cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    h, w = th.shape
+    for c in cnts:
+        x, y, cw, ch = cv2.boundingRect(c)
+        area = cw * ch
+        if area < min_area:
+            continue
+        pad = 2
+        x0 = max(0, x - pad)
+        y0 = max(0, y - pad)
+        x1 = min(w, x + cw + pad)
+        y1 = min(h, y + ch + pad)
+        crop = gray[y0:y1, x0:x1]
+        boxes.append((x0, crop))
+    boxes.sort(key=lambda t: t[0])
+    return boxes
+
+
+rgba_img is the image_data from st_canvas (RGBA floats usually).
+
+Convert RGBA → grayscale so we work on a single channel.
+
+GaussianBlur reduces tiny noise that might create spurious contours.
+
+Otsu thresholding binarizes the image into foreground/background.
+
+morphologyEx(..., MORPH_OPEN) removes small isolated (noisy) white pixels while keeping larger strokes intact.
+
+findContours locates connected white regions — ideally each digit becomes one contour.
+
+For each contour:
+
+boundingRect gives x, y, cw, ch.
+
+Filter small areas (min_area) to drop specks.
+
+Expand the bounding box slightly (pad=2) to include margins.
+
+Crop from the grayscale image (not the threshold) — we keep grayscale for later thresholding/resizing in preprocess_crop.
+
+boxes.append((x0, crop)) — storing x0 so we can sort boxes by horizontal position.
+
+boxes.sort(key=lambda t: t[0]) — sorts left-to-right so the predicted digit sequence matches reading order.
+
+Limitations: Touching digits or heavy overlaps may be found as a single contour, making segmentation fail.
+
+Streamlit UI and main app flow
+
+Key UI setup:
+
+st.set_page_config(page_title="MNIST Classifier", layout="wide")
+st.title("🖼️ MNIST Digit Classifier with CNN")
+st.caption("Left: draw a digit or multiple digits. Right: compact training graph.")
+
+
+Sets page title and layout.
+
+Load data and define sidebar controls:
+
+train_images, train_labels, test_images, test_labels = load_data()
+st.sidebar.header("⚙️ Model Settings")
+epochs = st.sidebar.slider("Epochs", 1, 10, 5)
+batch_size = st.sidebar.selectbox("Batch Size", [32, 64, 128], index=1)
+train_button = st.sidebar.button("🚀 Train / Retrain Model")
+
+
+load_data() gives the cached MNIST arrays.
+
+slider and selectbox allow choosing training hyperparameters.
+
+train_button triggers model training when clicked.
+
+Session-state for model persistence:
+
+if "model" not in st.session_state:
+    st.session_state.model = None
+if "history" not in st.session_state:
+    st.session_state.history = None
+
+
+st.session_state stores variables across Streamlit reruns. Without this, the trained model would be lost on UI interactions.
+
+Training logic:
+
+if train_button:
+    st.session_state.model = build_model()
+    with st.spinner("Training the model..."):
+        history = st.session_state.model.fit(
+            train_images, train_labels,
+            epochs=epochs,
+            batch_size=batch_size,
+            validation_data=(test_images, test_labels),
+            verbose=1
+        )
+        st.session_state.history = history.history
+    st.success("✅ Training complete!")
+
+
+When you click Train, the code:
+
+Constructs a new model via build_model().
+
+Calls model.fit(...):
+
+train_images, train_labels — training data.
+
+epochs — how many full passes over the training set.
+
+batch_size — number of samples per gradient update (32, 64, or 128).
+
+validation_data=(test_images, test_labels) — compute validation metrics after each epoch (note: using the test set as validation is OK for demos, but in production use a separate validation split).
+
+verbose=1 — prints progress to the console (Streamlit shows it in logs).
+
+Saves history.history (a dict with keys like 'loss', 'accuracy', 'val_loss', 'val_accuracy') to st.session_state so it can be plotted later.
+
+Main layout: left (canvas & predictions) and right (training plot & quick test)
+
+left, right = st.columns([2, 1])
+
+
+Two columns; left is wider.
+
+Canvas and interaction (left column):
+
+canvas_result = st_canvas(
+    fill_color="white",
+    stroke_width=12,
+    stroke_color="white",
+    background_color="black",
+    width=280,
+    height=200,
+    drawing_mode="freedraw",
+    key="canvas_multi",
+)
+
+
+background_color="black" + stroke_color="white" produces white digits on black background — consistent with MNIST (background dark, digit bright).
+
+stroke_width=12 gives a thick stroke that’s easy to detect and segment.
+
+canvas_result.image_data will be the RGBA pixel buffer (often float; code later converts to uint8).
+
+Predict / Clear buttons:
+
+predict_btn = st.button("Predict")
+clear_btn = st.button("Clear")
+
+if clear_btn:
+    st.experimental_rerun()
+
+
+experimental_rerun() forces the app to restart the script, clearing the canvas state.
+
+Prediction flow (when predict_btn):
+
+rgba = canvas_result.image_data.astype(np.uint8)
+boxes = segment_digits_from_canvas(rgba, min_area=80)
+...
+for x, crop in boxes:
+    proc = preprocess_crop(crop)
+    if proc is None:
+        continue
+    pred = st.session_state.model.predict(proc, verbose=0)
+    digit = int(np.argmax(pred))
+
+
+Convert image_data to uint8 (0–255).
+
+segment_digits_from_canvas returns bounding crops sorted left→right.
+
+For each crop:
+
+preprocess_crop returns a (1,28,28,1) float image or None.
+
+model.predict(proc) returns a (1,10) array of probabilities (softmax).
+
+np.argmax(pred) picks the index/class with highest probability → predicted digit.
+
+The UI then shows:
+
+Combined sequence (''.join(preds_text)).
+
+For each digit: a small image and a probability bar chart (via plot_probabilities and st.pyplot).
+
+Right column: plotting training history and quick test
+
+If st.session_state.history exists, it draws training and validation accuracy over epochs.
+
+The quick test lets you pick a test image index and see the model’s prediction on a real MNIST test image.
+
+How training actually happens (conceptual)
+
+Forward pass: For a mini-batch of input images, data flows through Conv and Dense layers producing a probability vector (softmax) for each image.
+
+Loss computation: The network compares predicted probabilities vs true one-hot labels using categorical cross-entropy:
+
+𝐿
+=
+−
+∑
+𝑖
+=
+0
+9
+𝑦
+𝑖
+log
+⁡
+(
+𝑦
+^
+𝑖
+)
+L=−
+i=0
+∑
+9
+	​
+
+y
+i
+	​
+
+log(
+y
+^
+	​
+
+i
+	​
+
+)
+
+where 
+𝑦
+𝑖
+y
+i
+	​
+
+ is 1 for the correct class and 
+𝑦
+^
+𝑖
+y
+^
+	​
+
+i
+	​
+
+ is the predicted probability for class 
+𝑖
+i.
+
+Backpropagation: Gradients of the loss wrt weights are computed via chain rule.
+
+Optimizer update (Adam): Adam updates weights using an adaptive learning rate computed from running averages of gradients and squared gradients.
+
+Repeat: This happens for every batch across all epochs. After each epoch, the model evaluates the validation set (test images in this demo) to compute validation accuracy/loss.
+
+How prediction works (step-by-step)
+
+User draws on st_canvas — an RGBA image buffer is created.
+
+Segmentation: segment_digits_from_canvas finds connected components (contours) and returns candidate crops (left→right).
+
+Preprocessing each crop: preprocess_crop:
+
+Binarize with Otsu,
+
+Tight-crop around the digit,
+
+Make square (pad) then resize to 20×20,
+
+Pad to 28×28,
+
+Center by centroid using image moments,
+
+Normalize to [0,1] and reshape to (1,28,28,1).
+
+Model inference: model.predict(proc) returns a 10-element probability vector.
+
+Decision: np.argmax returns the class with highest probability; UI shows both the class and the full probability bar chart.
+
+Edge cases, caveats & small implementation notes
+
+No model trained: The app warns if you press Predict before training. You could ship a pre-trained model instead of requiring local training.
+
+Using test set as validation: For demo OK, but ideally split training into train/val and keep the test set for final evaluation.
+
+Segmentation failures: If digits touch or overlap, contour detection might produce a single contour. You’d need more advanced segmentation (connected-component labeling + watershed, or character-segmentation models).
+
+Stroke color / background: The code expects white strokes on black background. If you invert colors, preprocessing may need inversion.
+
+Reproducibility / speed: Training on CPU might be slow; using a GPU accelerates training dramatically.
+
+Normalization: The network expects inputs normalized to [0,1]; that’s handled in both load_data and preprocess_crop.
+
+Centering choice: Shifting to (14,14) is a conventional trick used with MNIST so digits align similarly to training samples.
+
+Quick tips to improve or extend
+
+Save a trained model (model.save("mnist_model.h5")) and load it on app start so users don’t have to retrain each session.
+
+Use a pre-trained model or transfer learning to get better accuracy faster.
+
+Improve segmentation to handle connected digits: try morphological dilation along vertical/horizontal axes or use contour hierarchy heuristics.
+
+Add a small confidence threshold: if max(prob) < 0.6, mark as “low confidence”.
+
+Offer an “invert colors” option in case users draw with different canvas settings.
