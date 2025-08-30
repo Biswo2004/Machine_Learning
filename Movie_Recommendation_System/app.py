@@ -7,7 +7,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 # ------------------------------
 # Config
 # ------------------------------
-CSV_FILE = "merged_dataset.csv"  # Path to your CSV
+CSV_FILE = "Movie_Recommendation_System/merged_dataset.csv" # Path to your CSV
 TOP_N = 5  # Number of recommendations
 
 # ------------------------------
@@ -77,3 +77,4 @@ if st.button("Get Recommendations"):
                 with cols[i % 3]:
                     st.markdown(f"**{row['name']} ({row['year']})**")
                     st.caption(f"Genres: {row['genres']}\nRating: {row.get('rating', 'N/A')} ⭐")
+
