@@ -14,7 +14,7 @@ from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, r
 @st.cache_data
 def load_data():
     # SMSSpamCollection format: label \t message
-    data = pd.read_csv("SMSSpamCollection.csv", sep="\t", header=None, names=["label", "text"])
+    data = pd.read_csv("Spam_Email_Detector/SMSSpamCollection.csv", sep="\t", header=None, names=["label", "text"])
     data['label'] = data['label'].map({'ham': 0, 'spam': 1})  # Convert ham/spam to 0/1
     return data
 
@@ -125,3 +125,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
