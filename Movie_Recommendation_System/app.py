@@ -43,7 +43,8 @@ def get_recommendations(title, top_n=TOP_N):
     df_titles_lower = df["name"].str.lower()
 
     if title_lower not in df_titles_lower.values:
-        return []  # Movie not found
+        # Return empty DataFrame instead of list
+        return pd.DataFrame(columns=["name", "year", "genres", "rating"])
 
     idx = df_titles_lower[df_titles_lower == title_lower].index[0]
     sim_scores = list(enumerate(cosine_sim[idx]))
@@ -77,4 +78,3 @@ if st.button("Get Recommendations"):
                 with cols[i % 3]:
                     st.markdown(f"**{row['name']} ({row['year']})**")
                     st.caption(f"Genres: {row['genres']}\nRating: {row.get('rating', 'N/A')} ⭐")
-
